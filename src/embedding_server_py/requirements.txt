@@ -1,0 +1,20 @@
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.6.0
+numpy>=1.26.0
+pillow>=10.2.0
+
+# ONNX Runtime: 
+# For CPU only: onnxruntime
+# For NVIDIA GPU: onnxruntime-gpu
+# For Windows DirectML: onnxruntime-directml
+# Defaulting to standard CPU/GPU compatible package if available, or standard onnxruntime
+# onnxruntime>=1.17.0
+onnxruntime-directml>=1.17.0
+
+python-multipart>=0.0.9
+transformers>=4.52.4
+optimum[onnxruntime]>=1.16.0
+onnx>=1.15.0
+
+# torch>=2.0.0 # install torch outside 
