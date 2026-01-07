@@ -8,13 +8,15 @@ pillow>=10.2.0
 # For CPU only: onnxruntime
 # For NVIDIA GPU: onnxruntime-gpu
 # For Windows DirectML: onnxruntime-directml
+# For Intel OpenVINO: onnxruntime-openvino
 # Defaulting to standard CPU/GPU compatible package if available, or standard onnxruntime
 # onnxruntime>=1.17.0
-onnxruntime-directml>=1.17.0
+# onnxruntime-directml>=1.17.0
+# onnxruntime-openvino>=1.17.0
 
 python-multipart>=0.0.9
 transformers>=4.52.4
-optimum[onnxruntime]>=1.16.0
-onnx>=1.15.0
+# optimum[onnxruntime]>=1.16.0
+# onnx>=1.15.0
 
 # torch>=2.0.0 # install torch outside 

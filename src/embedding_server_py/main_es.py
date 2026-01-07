@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from result import Result, Err, OK, is_ok, is_err
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException
@@ -27,7 +28,7 @@ except Exception as e:  # pragma: no cover
     ORTModelForZeroShotImageClassification = None  # type: ignore[assignment]
     _OPTIMUM_IMPORT_ERROR = str(e)
 
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoModel, AutoModelForZeroShotImageClassification, AutoProcessor
 
 # --- Configuration ---
 # Define where your ONNX models are stored (directories)
@@ -95,6 +96,8 @@ class HealthResponse(BaseModel):
     models_loaded: List[str]
 
 # --- Model Inference Engine ---
+
+
 class BaseInferenceEngine(ABC):
     @abstractmethod
     def load_models(self) -> None:
@@ -155,11 +158,15 @@ class ONNXInferenceEngine(BaseInferenceEngine):
             available_providers = ort.get_available_providers()
             print(f"Available ONNX providers: {available_providers}")
 
-            # Provider priority: CUDA > DirectML > CPU
-            desired = ["CUDAExecutionProvider",
+            # Provider priority: OpenVINO > CUDA > DirectML > CPU
+            desired = ["OpenVINOExecutionProvider", "CUDAExecutionProvider",
                        "DmlExecutionProvider", "CPUExecutionProvider"]
             self.providers = [p for p in desired if p in available_providers]
             self.provider = self.providers[0] if self.providers else "CPUExecutionProvider"
+
+            if "OpenVINOExecutionProvider" not in available_providers:
+                print(
+                    "Tip: Install onnxruntime-openvino for faster inference on Intel devices.")
 
             session_options = ort.SessionOptions()
             session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -241,7 +248,8 @@ class ONNXInferenceEngine(BaseInferenceEngine):
         self.ensure_model_available(model_name)
         processor = self.processors.get(model_name)
         if processor is None:
-            raise HTTPException(status_code=500, detail=f"Processor not loaded for {model_name}")
+            raise HTTPException(
+                status_code=500, detail=f"Processor not loaded for {model_name}")
         effective_kwargs: Dict[str, Any] = dict(kwargs)
         if text is not None:
             effective_kwargs["text"] = text
@@ -267,7 +275,8 @@ class ONNXInferenceEngine(BaseInferenceEngine):
         self.ensure_model_available(model_name)
         model = self.models.get(model_name)
         if model is None:
-            raise HTTPException(status_code=500, detail=f"Model not loaded for {model_name}")
+            raise HTTPException(
+                status_code=500, detail=f"Model not loaded for {model_name}")
         effective_kwargs: Dict[str, Any] = dict(kwargs)
         if input_ids is not None:
             effective_kwargs["input_ids"] = input_ids
@@ -288,15 +297,19 @@ class TorchInferenceEngine(BaseInferenceEngine):
 
         # Mirrors ONNX engine's provider selection concept.
         # Values: "auto" (default), "cpu", "cuda"
-        device_pref = os.getenv("EMBEDDING_SERVER_TORCH_DEVICE", "auto").strip().lower()
+        device_pref = os.getenv(
+            "EMBEDDING_SERVER_TORCH_DEVICE", "auto").strip().lower()
         if device_pref == "cuda":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device(
+                "cuda" if torch.cuda.is_available() else "cpu")
         elif device_pref == "xpu":
-            self.device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
+            self.device = torch.device(
+                "xpu" if torch.xpu.is_available() else "cpu")
         elif device_pref == "cpu":
             self.device = torch.device("cpu")
         else:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "xpu" if torch.xpu.is_available() else "cpu")
+            self.device = torch.device("cuda" if torch.cuda.is_available(
+            ) else "xpu" if torch.xpu.is_available() else "cpu")
         print("Using Torch device", self.device)
 
         # Model IDs mirror setup_models.py
@@ -312,7 +325,8 @@ class TorchInferenceEngine(BaseInferenceEngine):
         }
 
         # Optional: pin cache directory for HF downloads.
-        self.cache_dir: Optional[str] = os.getenv("EMBEDDING_SERVER_TORCH_CACHE_DIR")
+        self.cache_dir: Optional[str] = os.getenv(
+            "EMBEDDING_SERVER_TORCH_CACHE_DIR")
 
     @staticmethod
     def _to_device(value: Any, device: torch.device) -> Any:
@@ -321,7 +335,8 @@ class TorchInferenceEngine(BaseInferenceEngine):
         if isinstance(value, dict):
             return {k: TorchInferenceEngine._to_device(v, device) for k, v in value.items()}
         if isinstance(value, (list, tuple)):
-            converted = [TorchInferenceEngine._to_device(v, device) for v in value]
+            converted = [TorchInferenceEngine._to_device(
+                v, device) for v in value]
             return tuple(converted) if isinstance(value, tuple) else converted
         return value
 
@@ -334,10 +349,22 @@ class TorchInferenceEngine(BaseInferenceEngine):
                 print(self.model_load_errors[model_name])
                 continue
 
-            print(f"Loading Torch model {model_name} from {model_id} on {self.device}...")
+            print(
+                f"Loading Torch model {model_name} from {model_id} on {self.device}...")
             try:
-                processor = AutoProcessor.from_pretrained(model_id, cache_dir=self.cache_dir)
-                model = AutoModel.from_pretrained(model_id, cache_dir=self.cache_dir)
+                processor = AutoProcessor.from_pretrained(
+                    model_id, cache_dir=self.cache_dir)
+
+                if model_name == "siglip2":
+                    # Use the retrieval/contrastive head so `get_text_features` and
+                    # `get_image_features` map to the same embedding space.
+                    model = AutoModelForZeroShotImageClassification.from_pretrained(
+                        model_id,
+                        cache_dir=self.cache_dir,
+                    )
+                else:
+                    model = AutoModel.from_pretrained(
+                        model_id, cache_dir=self.cache_dir)
                 model.eval()
                 model.to(self.device)
 
@@ -377,7 +404,8 @@ class TorchInferenceEngine(BaseInferenceEngine):
         self.ensure_model_available(model_name)
         processor = self.processors.get(model_name)
         if processor is None:
-            raise HTTPException(status_code=500, detail=f"Processor not loaded for {model_name}")
+            raise HTTPException(
+                status_code=500, detail=f"Processor not loaded for {model_name}")
         effective_kwargs: Dict[str, Any] = dict(kwargs)
         if text is not None:
             effective_kwargs["text"] = text
@@ -403,7 +431,8 @@ class TorchInferenceEngine(BaseInferenceEngine):
         self.ensure_model_available(model_name)
         model = self.models.get(model_name)
         if model is None:
-            raise HTTPException(status_code=500, detail=f"Model not loaded for {model_name}")
+            raise HTTPException(
+                status_code=500, detail=f"Model not loaded for {model_name}")
 
         effective_kwargs: Dict[str, Any] = dict(kwargs)
         if input_ids is not None:
@@ -416,37 +445,53 @@ class TorchInferenceEngine(BaseInferenceEngine):
         moved_kwargs = self._to_device(effective_kwargs, self.device)
 
         with torch.inference_mode():
-            outputs = model(**moved_kwargs)
-
-            # SigLIP/SigLIP2 compatibility: ensure outputs have `text_embeds` and `image_embeds`.
+            # SigLIP2: prefer the dedicated feature-extraction APIs. This avoids
+            # requiring both modalities (no dummy images/text) and produces
+            # embeddings intended for cross-modal similarity.
             if model_name == "siglip2":
-                if hasattr(outputs, "text_embeds") and hasattr(outputs, "image_embeds"):
-                    return outputs
+                from types import SimpleNamespace
 
                 text_embeds = None
                 image_embeds = None
 
-                if hasattr(model, "get_text_features") and "input_ids" in moved_kwargs:
+                if hasattr(model, "get_text_features") and moved_kwargs.get("input_ids") is not None:
                     text_embeds = model.get_text_features(
                         input_ids=moved_kwargs.get("input_ids"),
                         attention_mask=moved_kwargs.get("attention_mask"),
                     )
-                if hasattr(model, "get_image_features") and "pixel_values" in moved_kwargs:
+
+                if hasattr(model, "get_image_features") and moved_kwargs.get("pixel_values") is not None:
                     image_embeds = model.get_image_features(
                         pixel_values=moved_kwargs.get("pixel_values"),
                     )
 
                 if text_embeds is not None or image_embeds is not None:
-                    from types import SimpleNamespace
-
                     return SimpleNamespace(text_embeds=text_embeds, image_embeds=image_embeds)
+
+                # Fallback: try a normal forward pass and extract projected embeds.
+                outputs = model(**moved_kwargs)
+                if hasattr(outputs, "text_embeds") or hasattr(outputs, "image_embeds"):
+                    return outputs
 
                 raise HTTPException(
                     status_code=500,
                     detail="SigLIP2 model output missing text/image embeddings",
                 )
 
-            return outputs
+            return model(**moved_kwargs)
+
+    def process_and_forward(
+            self, model_name: str, text: Optional[list[str]], images: Optional[list[Image.Image]]
+    ) -> Result[tuple(Optional[list], Optional[list]), str]:
+        if model_name == "siglip2":
+            if not text and not images:
+                return Err("No text or image given to siglip2")
+            text_embd_result = None
+            img_embd_result = None
+            if text:
+                pass
+            
+            if 
 
 
 def _is_data_uri_image(s: str) -> bool:
@@ -557,32 +602,54 @@ def _embed_siglip2(engine: BaseInferenceEngine, model_name: str, item: str) -> T
         raise RuntimeError(f"SigLIP2 output missing {key}")
 
     img, _kind = _try_load_image_from_input(item)
-    dummy_img = Image.new("RGB", (512, 512), (0, 0, 0))
 
     if img is not None:
-        # ONNX graph expects both text and image; provide empty text as a dummy.
+        # Prefer image-only processing; some ONNX exports may require both
+        # modalities, so fall back if needed.
+        try:
+            processed = engine.call_processor(
+                model_name,
+                images=[img],
+                return_tensors="pt",
+            )
+            outputs = engine.call_model(model_name, **processed)
+        except Exception:
+            processed = engine.call_processor(
+                model_name,
+                text=[""],
+                images=[img],
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            )
+            outputs = engine.call_model(model_name, **processed)
+
+        vec = _get_output_tensor(outputs, "image_embeds")
+        vec = F.normalize(vec, p=2, dim=-1)
+        return vec[0].tolist(), 0
+
+    # Prefer text-only processing; some ONNX exports may require both modalities.
+    try:
         processed = engine.call_processor(
             model_name,
-            text=[""],
-            images=[img],
+            text=[item],
             return_tensors="pt",
             padding=True,
             truncation=True,
         )
         outputs = engine.call_model(model_name, **processed)
-        vec = _get_output_tensor(outputs, "image_embeds")
-        vec = F.normalize(vec, p=2, dim=-1)
-        return vec[0].tolist(), 0
+    except Exception:
+        dummy_img = Image.new("RGB", (512, 512), (0, 0, 0))
+        processed = engine.call_processor(
+            model_name,
+            text=[item],
+            images=[dummy_img],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        )
+        outputs = engine.call_model(model_name, **processed)
 
-    processed = engine.call_processor(
-        model_name,
-        text=[item],
-        images=[dummy_img],
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-    )
-    outputs = engine.call_model(model_name, **processed)
     vec = _get_output_tensor(outputs, "text_embeds")
     vec = F.normalize(vec, p=2, dim=-1)
     return vec[0].tolist(), _estimate_prompt_tokens(item)
@@ -592,7 +659,8 @@ def _embed_dinov2(engine: BaseInferenceEngine, model_name: str, item: str) -> Tu
     img, _kind = _try_load_image_from_input(item)
     if img is None:
         raise ValueError("DinoV2 is vision-only; expected image input")
-    processed = engine.call_processor(model_name, images=img, return_tensors="pt")
+    processed = engine.call_processor(
+        model_name, images=img, return_tensors="pt")
     outputs = engine.call_model(model_name, **processed)
     if not hasattr(outputs, "last_hidden_state"):
         raise RuntimeError("DinoV2 model output missing last_hidden_state")
@@ -602,6 +670,7 @@ def _embed_dinov2(engine: BaseInferenceEngine, model_name: str, item: str) -> Tu
 
 
 # engine = ONNXInferenceEngine()
+# todo: openvino has bug!
 engine = TorchInferenceEngine()
 
 

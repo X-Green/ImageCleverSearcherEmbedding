@@ -2,7 +2,7 @@
 
 Usage:
 Run:
-      uv run ./tests/embedding_server_py/client_test.py --server_url http://127.0.0.1:3752 --start_server True
+      uv run ./tests/embedding_server_py/client_test.py --server_url http://127.0.0.1:3752
 """
 
 from __future__ import annotations
@@ -105,6 +105,11 @@ def _assert_embedding(vec: list[float], min_dim: int = 32) -> None:
     assert 0.98 <= n <= 1.02, f"unexpected norm={n}"
 
 
+def _dot_similarity(a: list[float], b: list[float]) -> float:
+    """Dot product similarity for L2-normalized embeddings."""
+    return float(numpy.dot(numpy.asarray(a, dtype=numpy.float32), numpy.asarray(b, dtype=numpy.float32)))
+
+
 def _make_mixed_img_list() -> tuple[list[str], Callable[[], None]]:
     tmp_dir = tempfile.mkdtemp(prefix="embedding-imgs-")
     file_path = os.path.join(tmp_dir, "local.png")
@@ -125,6 +130,34 @@ def _make_mixed_img_list() -> tuple[list[str], Callable[[], None]]:
 
     return imgs, cleanup
 
+
+@mark_in_out
+def test_text_image_retrieval_sanity_siglip2(server_url: str) -> None:
+    """Sanity-check that SigLIP2 text/image embeddings are in the same space.
+
+    This is intentionally lightweight: a cat-related query should score higher
+    against a COCO cats image than an unrelated car query.
+    """
+    coco_cats_url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+    img_emb = test_image_single(server_url, "siglip2", coco_cats_url)
+
+    # Query text candidates (keep deterministic, no prompt templates).
+    cat_query = "two cats lying on a couch"
+    car_query = "a red car parked on a street"
+    animal_query = "some animals in the image"
+
+    cat_emb = test_text_single(server_url, "siglip2", cat_query)
+    car_emb = test_text_single(server_url, "siglip2", car_query)
+    animal_emb = test_text_single(server_url, "siglip2", animal_query)
+
+    sim_cat = _dot_similarity(cat_emb, img_emb)
+    sim_car = _dot_similarity(car_emb, img_emb)
+    sim_animal = _dot_similarity(animal_emb, img_emb)
+    print(f"Sanity text↔image similarity: cat={sim_cat:.4f} animal={sim_animal:.4f} car={sim_car:.4f}")
+
+    # Allow a small margin; we mainly want to catch pathological near-zero/garbage text embeddings.
+    assert sim_cat > sim_car - 0.01, f"unexpected ranking: cat={sim_cat} car={sim_car}"
+
 def post_embeddings(server_url: str, model: str, inputs: list[str]) -> tuple[int, dict[str, Any] | None, str]:
     url = _urljoin(server_url, "/v1/embeddings")
     res = _http_post_json(url, {"input": inputs, "model": model, "encoding_format": "float"})
@@ -142,6 +175,7 @@ def test_image_single(server_url: str, model_name: str, img_input: str) -> list[
     assert parsed.get("model") == model_name
     emb = parsed["data"][0]["embedding"]
     _assert_embedding(emb)
+    print(f"Embedding stats - Mean: {numpy.mean(emb):.6f}, Std: {numpy.std(emb):.6f}")
     # print(emb)
     return emb
 
@@ -154,6 +188,7 @@ def test_image_batch(server_url: str, model_name: str, img_inputs: list[str]) ->
     out: list[list[float]] = []
     for item in parsed["data"]:
         _assert_embedding(item["embedding"])
+        print(f"Embedding stats - Mean: {numpy.mean(item['embedding']):.6f}, Std: {numpy.std(item['embedding']):.6f}")
         out.append(item["embedding"])
     return out
 
@@ -164,6 +199,7 @@ def test_text_single(server_url: str, model_name: str, text: str) -> list[float]
     assert parsed is not None, f"invalid JSON response: {raw}"
     emb = parsed["data"][0]["embedding"]
     _assert_embedding(emb)
+    print(f"Embedding stats - Mean: {numpy.mean(emb):.6f}, Std: {numpy.std(emb):.6f}")
     return emb
 
 @mark_in_out
@@ -174,6 +210,7 @@ def test_text_batch(server_url: str, model_name: str, texts: list[str]) -> list[
     out: list[list[float]] = []
     for item in parsed["data"]:
         _assert_embedding(item["embedding"])
+        print(f"Embedding stats - Mean: {numpy.mean(item['embedding']):.6f}, Std: {numpy.std(item['embedding']):.6f}")
         out.append(item["embedding"])
     return out
 
@@ -187,6 +224,7 @@ def test_mixed_inputs_siglip2(server_url: str) -> None:
     assert [d["index"] for d in parsed["data"]] == list(range(len(mixed)))
     for d in parsed["data"]:
         _assert_embedding(d["embedding"])
+        print(f"Embedding stats - Mean: {numpy.mean(d['embedding']):.6f}, Std: {numpy.std(d['embedding']):.6f}")
 
 @mark_in_out
 def test_dinov2_rejects_text(server_url: str) -> None:
@@ -288,6 +326,9 @@ def main() -> int:
         # Text tests (SigLIP2 supports text)
         test_text_single(server_url, "siglip2", TEXTS[0])
         test_text_batch(server_url, "siglip2", TEXTS)
+
+        # Text↔image retrieval sanity (SigLIP2)
+        test_text_image_retrieval_sanity_siglip2(server_url)
 
         # Mixed input ordering (SigLIP2)
         test_mixed_inputs_siglip2(server_url)

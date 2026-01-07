@@ -7,7 +7,7 @@ if (-not (Get-Command "uv" -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Creating virtual environment..."
-uv venv .venv --python 3.10 --clear
+uv venv .venv --python 3.14 --clear
 
 Write-Host "Installing dependencies..."
 # Activate venv for the installation context or use uv pip directly
